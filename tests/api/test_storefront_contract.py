@@ -84,6 +84,87 @@ def test_product_contract_exposes_identity_category_and_currency(storefront, pat
     assert data["price"] == "170.00"
     assert data["currency"] == "EGP"
     assert data["imageUrl"] == "/uploads/lip.png"
+    assert data["imageUrls"] == []
+
+
+@pytest.mark.parametrize("field,count", [("imageFile", 1), ("imageFiles", 2)])
+def test_admin_creates_gallery_with_legacy_or_multiple_uploads(
+    storefront, monkeypatch, field, count
+):
+    from app.services import product as product_service
+
+    client, app, _, user, product, _ = storefront
+    app.dependency_overrides[get_current_user] = lambda: {**user, "role": "admin"}
+    paths = [f"/photo-{i}.webp" for i in range(count)]
+    monkeypatch.setattr(product_service, "upload_file", AsyncMock(side_effect=paths))
+    monkeypatch.setattr(
+        product_api,
+        "get_category_id_from_slug",
+        AsyncMock(return_value=product.category_id),
+    )
+    created = product.model_copy(update={"image_url": paths[0], "image_urls": paths})
+    create = AsyncMock(return_value=created.model_dump())
+    monkeypatch.setattr(product_api, "create_product", create)
+    monkeypatch.setattr(product_api, "record_audit", AsyncMock())
+    response = client.post(
+        "/api/products",
+        data={
+            "productName": "Lip Balm",
+            "price": "170.00",
+            "stockQuantity": "2",
+            "categorySlug": "lips",
+        },
+        files=[
+            (field, (f"photo-{i}.webp", b"image", "image/webp")) for i in range(count)
+        ],
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["data"]["imageUrls"] == paths
+    assert response.json()["data"]["imageUrl"] == paths[0]
+    assert create.await_args.args[2] == paths
+
+
+@pytest.mark.parametrize(
+    "method,path,kwargs",
+    [
+        (
+            "post",
+            "/api/products/lip-balm/images",
+            {"files": {"imageFiles": ("x.webp", b"image", "image/webp")}},
+        ),
+        ("delete", "/api/products/lip-balm/images?imageUrl=x", {}),
+        ("patch", "/api/products/lip-balm/images/cover?imageUrl=x", {}),
+    ],
+)
+def test_product_gallery_mutations_require_admin(storefront, method, path, kwargs):
+    client, app, _, user, _, _ = storefront
+    assert getattr(client, method)(path, **kwargs).status_code in (401, 403)
+    app.dependency_overrides[get_current_user] = lambda: user
+    assert getattr(client, method)(path, **kwargs).status_code == 403
+
+
+def test_audit_failure_rolls_back_storage_uploads(storefront, monkeypatch):
+    from app.services import product as product_service
+
+    client, app, _, user, product, _ = storefront
+    app.dependency_overrides[get_current_user] = lambda: {**user, "role": "admin"}
+    monkeypatch.setattr(
+        product_service, "upload_file", AsyncMock(return_value="/new.webp")
+    )
+    cleanup = AsyncMock()
+    monkeypatch.setattr(product_service, "delete_uploaded_file", cleanup)
+    monkeypatch.setattr(
+        product_api, "change_product_images", AsyncMock(return_value=product)
+    )
+    monkeypatch.setattr(
+        product_api, "record_audit", AsyncMock(side_effect=RuntimeError("audit failed"))
+    )
+    with pytest.raises(RuntimeError, match="audit failed"):
+        client.post(
+            "/api/products/lip-balm/images",
+            files={"imageFiles": ("x.webp", b"image", "image/webp")},
+        )
+    cleanup.assert_awaited_once_with("/new.webp")
 
 
 def test_only_admin_can_inspect_a_reported_review(storefront, monkeypatch):

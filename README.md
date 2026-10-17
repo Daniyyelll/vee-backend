@@ -310,6 +310,32 @@ the database migration before the new API and frontend. Old versioned
 objects remain in storage so pages already open during a publish keep
 working; review their retention as part of storage operations.
 
+## Product photos
+
+Apply migration `d17f4b8e2a90` before deploying the gallery API. It backfills
+each existing `image_url` into an ordered `image_urls` array. Product responses
+expose `imageUrls` alongside `imageUrl`, which remains the first photo/cover
+for collection cards and bags. Downgrading keeps the current cover.
+
+Product creation accepts repeated multipart `imageFiles` fields (the legacy
+single `imageFile` field still works). Each product supports up to ten photos;
+each upload batch can total up to 5 MB. The existing PNG/JPEG/WebP validation
+and 6 MiB request-body ceiling still apply.
+
+These additional routes require an administrator and record audit events:
+
+| Method | Route | Behavior |
+| --- | --- | --- |
+| POST | `/api/products/{slug}/images` | Append multipart `imageFiles` |
+| PATCH | `/api/products/{slug}/images/cover?imageUrl={url}` | Move an existing photo to the cover position |
+| DELETE | `/api/products/{slug}/images?imageUrl={url}` | Remove an existing photo; at least one must remain |
+
+URL-encode the `imageUrl` query value. All three return the updated product.
+Updates lock the product row to serialize concurrent edits and keep the cover
+and gallery consistent. Failed uploads or database transactions clean up newly
+uploaded files; successful removals delete the removed storage object after
+the database commit.
+
 ## Database upgrades and validation
 
 Apply migrations before using the new routes:
@@ -375,11 +401,9 @@ headers only from that proxy's IP range.
 
 Use a persistent, backed-up volume for PostgreSQL. The Docker Compose file is
 local development infrastructure and pins PostgreSQL 18.4; changing a running
-major version requires a planned database upgrade. Product images currently
-live in `PRODUCT_UPLOAD_DIR` (default `uploads/products`). Production must
-mount that directory on persistent shared storage and serve it consistently
-across application replicas, or replace local storage with an object-store
-adapter before adding replicas. Include image storage and the database in
+major version requires a planned database upgrade. Product images are stored
+in the public Supabase bucket configured by `SUPABASE_PRODUCT_BUCKET`.
+Keep the Supabase service-role key server-side. Include image storage and the database in
 backup and restore drills. Use TLS at the reverse proxy and restrict database
 and SMTP access to the app network. Run multiple Uvicorn worker processes under
 the platform's process manager; `main.py` enables reload only in development.

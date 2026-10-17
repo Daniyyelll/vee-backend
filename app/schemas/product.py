@@ -41,6 +41,7 @@ class ProductRead(BaseModel):
     price: Decimal
     stock_quantity: int = Field(ge=0)
     image_url: str | None
+    image_urls: list[str] = Field(default_factory=list)
     active: bool = True
 
 

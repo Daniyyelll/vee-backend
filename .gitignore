@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .vercel/
+prod_db.sh
 
 # Python and tooling
 .venv/
